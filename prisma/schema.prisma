@@ -1,0 +1,352 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Use Decimal for financial fields
+model Organization {
+  id         String      @id                      // JSON organizationId string
+  name       String? 
+  createdAt  DateTime? 
+  updatedAt  DateTime?
+  Departments Department[]
+  Documents   Document[]
+}
+
+model Department {
+  id             String      @id                  // JSON departmentId
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  organizationId String? 
+  name           String?
+  Documents      Document[]
+}
+
+model User {
+  id        String    @id                       // JSON user id (uploadedById etc)
+  email     String?
+  name      String?
+  Documents Document[]    @relation("UploadedDocs")
+  ChatSessions ChatSession[]
+  ChatQueries  ChatQuery[]
+}
+
+model Document {
+  id             String   @id @default(uuid())   // internal UUID
+  sourceId       String   @unique                // original JSON _id
+  name           String?
+  filePath       String?
+  fileSize       Int?                              // small files: use Int; if you need >2^31 use BigInt
+  fileType       String?
+  status         String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  organizationId String?
+  department     Department?   @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  departmentId   String?
+  createdAt      DateTime?
+  updatedAt      DateTime?
+  processedAt    DateTime?
+  uploadedBy     User?      @relation("UploadedDocs", fields: [uploadedById], references: [id], onDelete: SetNull)
+  uploadedById   String?
+  isValidatedByHuman Boolean? @default(false)
+  analyticsId    String?    @db.VarChar(255)
+  metadata       Json?
+  extractedData  Json?      // raw llmData etc.
+  validatedData  Json?
+  validatedAt    DateTime?
+  validatedBy    String?
+  Invoice        Invoice?   // one invoice per document (common mapping)
+  Payments       Payment[]
+  LineItems      LineItem[]
+  // Back-reference fields for relations
+  VendorCanonical Vendor[] @relation("VendorCanonical")
+  CustomerCanonical Customer[] @relation("CustomerCanonical")
+  ExtractionAudits ExtractionAudit[]
+  EntityAliases  EntityAlias[]
+  createdAtInternal DateTime @default(now())
+  @@index([analyticsId])
+  @@index([sourceId])
+}
+
+model Vendor {
+  id                String   @id @default(uuid())
+  vendorName        String
+  vendorPartyNumber String? 
+  vendorAddress     String?
+  vendorTaxId       String?   @unique
+  firstSeen         DateTime?
+  lastSeen          DateTime?
+  canonicalDocument Document? @relation("VendorCanonical", fields: [canonicalDocumentId], references: [id], onDelete: SetNull)
+  canonicalDocumentId String?
+  Invoices          Invoice[]
+  @@index([vendorTaxId])
+}
+
+model Customer {
+  id                String   @id @default(uuid())
+  customerName      String?
+  customerAddress   String?
+  firstSeen         DateTime?
+  lastSeen          DateTime?
+  canonicalDocument Document? @relation("CustomerCanonical", fields: [canonicalDocumentId], references: [id], onDelete: SetNull)
+  canonicalDocumentId String?
+  Invoices          Invoice[]
+}
+
+model Invoice {
+  id            String   @id @default(uuid())
+  document      Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  documentId    String   @unique
+  invoiceNumber String?   @db.VarChar(255)
+  invoiceDate   DateTime?
+  deliveryDate  DateTime?
+  documentType  String?
+  currencySymbol String?
+  subTotal      Decimal?  @db.Decimal(18,4)
+  totalTax      Decimal?  @db.Decimal(18,4)
+  invoiceTotal  Decimal?  @db.Decimal(18,4)
+  vendor        Vendor?   @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  vendorId      String?
+  customer      Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  customerId    String?
+  notes         String?
+  Payments      Payment[]
+  LineItems     LineItem[]
+  createdAt     DateTime? @default(now())
+  updatedAt     DateTime?
+  @@index([invoiceNumber])
+  @@index([invoiceDate])
+}
+
+model Payment {
+  id                 String   @id @default(uuid())
+  invoice            Invoice? @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId          String?
+  document           Document? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  documentId         String?
+  dueDate            DateTime?
+  paymentTerms       String?
+  bankAccountNumber  String?
+  bic                String?
+  accountName        String?
+  netDays            Int?
+  discountPercentage Decimal? @db.Decimal(6,3)
+  discountDays       Int?
+  discountDueDate    DateTime?
+  discountedTotal    Decimal? @db.Decimal(18,4)
+  sourceRaw          Json?
+  createdAt          DateTime @default(now())
+  @@index([invoiceId])
+}
+
+model LineItem {
+  id           String   @id @default(uuid())
+  invoice      Invoice? @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId    String?
+  document     Document? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  documentId   String?
+  srNo         Int?
+  description  String?
+  quantity     Decimal?  @db.Decimal(18,4)
+  unitPrice    Decimal?  @db.Decimal(18,4)
+  totalPrice   Decimal?  @db.Decimal(18,4)
+  sachkonto    String?
+  buSchluessel String?
+  vatRate      Decimal?  @db.Decimal(6,3)
+  vatAmount    Decimal?  @db.Decimal(18,4)
+  sourceRaw    Json?
+  createdAt    DateTime  @default(now())
+  @@index([invoiceId])
+  @@index([sachkonto])
+}
+
+model ExtractionAudit {
+  id          String   @id @default(uuid())
+  document    Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  documentId  String
+  fieldPath   String
+  extractedValue String?
+  confidence  Decimal? @db.Decimal(6,4)
+  rawMeta     Json?
+  createdAt   DateTime @default(now())
+  @@index([documentId])
+  @@index([fieldPath])
+}
+
+model EntityAlias {
+  id           String   @id @default(uuid())
+  entityType   String   // 'vendor' | 'customer'
+  canonicalId  String
+  aliasText    String
+  sourceDoc    Document? @relation(fields: [sourceDocId], references: [id], onDelete: SetNull)
+  sourceDocId  String?
+  createdAt    DateTime  @default(now())
+}
+
+// Chat and AI Query Models
+model ChatSession {
+  id           String   @id @default(uuid())
+  user         User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId       String?
+  sessionName  String?  @default("New Chat Session")
+  isActive     Boolean  @default(true)
+  metadata     Json?    // Store session preferences, context, etc.
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lastUsedAt   DateTime @default(now())
+  
+  // Relations
+  queries      ChatQuery[]
+  
+  @@index([userId])
+  @@index([isActive])
+  @@index([lastUsedAt])
+}
+
+model ChatQuery {
+  id                String      @id @default(uuid())
+  session           ChatSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  sessionId         String?
+  user              User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId            String?
+  
+  // Query details
+  question          String      @db.Text
+  generatedSql      String?     @db.Text
+  explanation       String?     @db.Text
+  
+  // Execution details
+  wasExecuted       Boolean     @default(false)
+  executionSuccess  Boolean?
+  executionError    String?     @db.Text
+  resultRowCount    Int?
+  executionTimeMs   Int?
+  
+  // Query metadata
+  queryIntent       String?     // 'analytics', 'comparison', 'trend', etc.
+  queryComplexity   String?     // 'low', 'medium', 'high'
+  outputFormat      String?     // 'json', 'csv', 'table', 'chart_data', 'summary'
+  tablesInvolved    String[]    // Array of table names used
+  
+  // Context and feedback
+  context           Json?       // Additional context provided with query
+  userFeedback      String?     // User feedback on query results
+  feedbackRating    Int?        // 1-5 rating
+  
+  // AI service metadata
+  aiModel           String?     @default("llama-3.1-70b-versatile")
+  aiServiceVersion  String?
+  processingTimeMs  Int?
+  
+  // Timestamps
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  
+  @@index([sessionId])
+  @@index([userId])
+  @@index([wasExecuted])
+  @@index([executionSuccess])
+  @@index([queryIntent])
+  @@index([createdAt])
+}
+
+model QueryTemplate {
+  id              String   @id @default(uuid())
+  name            String
+  description     String?  @db.Text
+  category        String   // 'vendor_analysis', 'invoice_trends', 'department_analysis', etc.
+  templateQuery   String   @db.Text
+  sqlTemplate     String?  @db.Text
+  parameters      Json?    // Template parameters and their types
+  isPublic        Boolean  @default(true)
+  usageCount      Int      @default(0)
+  
+  // Metadata
+  tags            String[]
+  difficulty      String?  // 'beginner', 'intermediate', 'advanced'
+  estimatedTime   Int?     // Estimated execution time in seconds
+  
+  // Timestamps
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([category])
+  @@index([isPublic])
+  @@index([usageCount])
+}
+
+model QueryFeedback {
+  id              String   @id @default(uuid())
+  queryId         String?  // Reference to ChatQuery if available
+  
+  // Feedback details
+  originalQuestion String  @db.Text
+  generatedSql     String? @db.Text
+  feedbackType     String  // 'incorrect_sql', 'wrong_results', 'suggestion', 'compliment'
+  feedbackText     String  @db.Text
+  rating           Int?    // 1-5 rating
+  
+  // User info (optional for anonymous feedback)
+  userEmail        String?
+  userName         String?
+  
+  // Status
+  status           String  @default("pending") // 'pending', 'reviewed', 'resolved'
+  adminNotes       String? @db.Text
+  
+  // Timestamps
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  
+  @@index([feedbackType])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model AIServiceMetrics {
+  id                    String   @id @default(uuid())
+  date                  DateTime @db.Date
+  
+  // Usage metrics
+  totalQueries          Int      @default(0)
+  successfulQueries     Int      @default(0)
+  failedQueries         Int      @default(0)
+  
+  // Performance metrics
+  avgResponseTimeMs     Int?
+  avgExecutionTimeMs    Int?
+  
+  // Query complexity distribution
+  simpleQueries         Int      @default(0)
+  mediumQueries         Int      @default(0)
+  complexQueries        Int      @default(0)
+  
+  // Popular categories
+  vendorAnalysisQueries Int      @default(0)
+  invoiceTrendQueries   Int      @default(0)
+  departmentQueries     Int      @default(0)
+  paymentQueries        Int      @default(0)
+  otherQueries          Int      @default(0)
+  
+  // Error tracking
+  sqlGenerationErrors   Int      @default(0)
+  executionErrors       Int      @default(0)
+  timeoutErrors         Int      @default(0)
+  
+  // Timestamps
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  
+  @@unique([date])
+  @@index([date])
+}
